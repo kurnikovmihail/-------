@@ -9,6 +9,7 @@ import { RotateCw, Lock, LayoutGrid, History, ShoppingBasket, ChefHat } from 'lu
 
 const tg = window.Telegram.WebApp;
 
+// СОСТОЯНИЕ
 const activeTab = ref('main'); 
 const userRole = ref(null); 
 const products = ref([]);
@@ -16,13 +17,17 @@ const dailyEntries = ref([]);
 const loading = ref(true);
 const userId = tg.initDataUnsafe?.user?.id || null;
 
+// ИНИЦИАЛИЗАЦИЯ
 const initialize = async () => {
   loading.value = true;
+  
+  // 1. Загрузка справочника товаров
   const { data: prods } = await supabase.from('products').select('*').order('name');
   products.value = prods || [];
 
+  // 2. Проверка роли
   if (!userId) {
-    userRole.value = 'admin'; 
+    userRole.value = 'admin'; // Режим ПК
   } else {
     const { data: user } = await supabase.from('allowed_users').select('role').eq('telegram_id', userId).single();
     userRole.value = user?.role || false;
@@ -32,8 +37,11 @@ const initialize = async () => {
   loading.value = false;
 };
 
+// ЗАГРУЗКА ДАННЫХ ЗА СЕГОДНЯ
 const fetchTodayRecords = async () => {
   const today = new Date().toISOString().split('T')[0];
+  
+  // Берем все записи за сегодня
   const { data } = await supabase.from('daily_records')
     .select('*, products(name, category, unit)')
     .gte('created_at', today)
@@ -41,15 +49,16 @@ const fetchTodayRecords = async () => {
 
   if (data && data.length > 0) {
     const uniqueMap = new Map();
+    // Оставляем только самую свежую запись для каждого товара
     data.forEach(item => {
       if (!uniqueMap.has(item.product_id)) {
         uniqueMap.set(item.product_id, {
           product_id: item.product_id,
           name: item.products.name,
           category: item.products.category,
-          arrival: item.arrival ?? 0,
-          remainder: item.remainder ?? 0,
-          write_off: item.write_off ?? 0
+          arrival: item.arrival || null,
+          remainder: item.remainder || null,
+          write_off: item.write_off || null
         });
       }
     });
@@ -59,37 +68,49 @@ const fetchTodayRecords = async () => {
   }
 };
 
+// СОХРАНЕНИЕ (И УДАЛЕНИЕ ЛИШНЕГО)
 const saveReport = async () => {
-  tg.MainButton.showProgress();
+  if (tg.MainButton) tg.MainButton.showProgress();
   const today = new Date().toISOString().split('T')[0];
 
-  // Очищаем старое
-  await supabase.from('daily_records')
-    .delete()
-    .eq('user_id', userId || 0)
-    .gte('created_at', today);
+  try {
+    // 1. УДАЛЯЕМ ВСЁ за сегодня. 
+    // Это гарантирует, что те позиции, которые ты удалил из списка на экране, исчезнут и из БД.
+    const { error: deleteError } = await supabase.from('daily_records')
+      .delete()
+      .gte('created_at', today);
 
-  if (dailyEntries.value.length > 0) {
-    const { error } = await supabase.from('daily_records').insert(
-      dailyEntries.value.map(e => ({
-        product_id: e.product_id,
-        // Если значение null, undefined или пустая строка — шлем 0
-        arrival: (e.arrival !== null && e.arrival !== '') ? Number(e.arrival) : 0,
-        remainder: (e.remainder !== null && e.remainder !== '') ? Number(e.remainder) : 0,
-        write_off: (e.write_off !== null && e.write_off !== '') ? Number(e.write_off) : 0,
-        user_id: userId || 0
-      }))
-    );
-    if (error) alert(error.message);
+    if (deleteError) throw deleteError;
+
+    // 2. ВСТАВЛЯЕМ АКТУАЛЬНЫЙ СПИСОК (если он не пуст)
+    if (dailyEntries.value.length > 0) {
+      const { error: insertError } = await supabase.from('daily_records').insert(
+        dailyEntries.value.map(e => ({
+          product_id: e.product_id,
+          arrival: (e.arrival !== null && e.arrival !== '') ? Number(e.arrival) : 0,
+          remainder: (e.remainder !== null && e.remainder !== '') ? Number(e.remainder) : 0,
+          write_off: (e.write_off !== null && e.write_off !== '') ? Number(e.write_off) : 0,
+          user_id: userId || 0
+        }))
+      );
+      if (insertError) throw insertError;
+    }
+
+    tg.HapticFeedback?.notificationOccurred('success');
+    tg.showAlert?.("✅ Данные в базе обновлены");
+    
+  } catch (err) {
+    console.error(err);
+    tg.showAlert?.("Ошибка: " + err.message);
+  } finally {
+    if (tg.MainButton) tg.MainButton.hideProgress();
   }
-
-  tg.MainButton.hideProgress();
-  tg.HapticFeedback.notificationOccurred('success');
-  tg.showAlert("✅ Данные сохранены");
 };
 
+// Управление кнопкой Telegram
 watch([userRole, dailyEntries, activeTab], () => {
-  if (userRole.value !== 'chef' && dailyEntries.value.length > 0 && activeTab.value === 'main') {
+  if (userRole.value !== 'chef' && activeTab.value === 'main') {
+    // Кнопка видна всегда, чтобы можно было "сохранить пустоту" (удалить всё)
     tg.MainButton.setParams({ text: "СОХРАНИТЬ ОТЧЕТ", is_visible: true, color: '#2563eb' });
   } else {
     tg.MainButton.hide();
@@ -111,20 +132,25 @@ const groupedEntries = computed(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50 text-slate-900 pb-20 select-none">
-    <header class="bg-white/90 backdrop-blur-md p-3 sticky top-0 z-40 border-b border-slate-200 flex justify-between items-center">
+  <div class="min-h-screen bg-slate-50 text-slate-900 pb-24 select-none">
+    
+    <header class="bg-white/90 backdrop-blur-md p-3 sticky top-0 z-40 border-b border-slate-200 flex justify-between items-center shadow-sm">
       <div>
-        <h1 class="text-lg font-black italic tracking-tighter text-blue-600 leading-none uppercase">KAFETERIY</h1>
+        <h1 class="text-lg font-black italic tracking-tighter text-blue-600 leading-none uppercase">Cofeyny</h1>
         <p class="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">Рабочая смена</p>
       </div>
       <div class="flex items-center gap-2">
         <span class="text-[8px] font-black px-2 py-0.5 bg-slate-100 rounded text-slate-500 uppercase">{{ userRole }}</span>
-        <button @click="initialize" class="text-slate-300 active:rotate-180 transition-transform duration-500"><RotateCw class="w-4 h-4" /></button>
+        <button @click="initialize" class="text-slate-300 active:rotate-180 transition-transform duration-500">
+          <RotateCw class="w-4 h-4" />
+        </button>
       </div>
     </header>
 
     <main class="p-2">
-      <div v-if="loading" class="flex justify-center py-10"><RotateCw class="w-6 h-6 animate-spin text-blue-500" /></div>
+      <div v-if="loading" class="flex justify-center py-10">
+        <RotateCw class="w-6 h-6 animate-spin text-blue-500" />
+      </div>
       
       <div v-else-if="userRole === false" class="text-center py-10">
         <Lock class="w-10 h-10 text-red-300 mx-auto mb-2" />
@@ -135,7 +161,11 @@ const groupedEntries = computed(() => {
         <AdminArchive v-if="activeTab === 'archive' && userRole === 'admin'" />
 
         <div v-else class="space-y-4">
-          <ProductSelector v-if="userRole !== 'chef'" :products="products" :dailyEntries="dailyEntries" 
+          
+          <ProductSelector 
+            v-if="userRole !== 'chef'" 
+            :products="products" 
+            :dailyEntries="dailyEntries" 
             @add="p => {
               if (!dailyEntries.find(e => e.product_id === p.id)) {
                 dailyEntries.unshift({
@@ -144,11 +174,12 @@ const groupedEntries = computed(() => {
                   category: p.category,
                   arrival: null,
                   remainder: null,
-                  write_off: null // Изначально ноль
+                  write_off: null
                 });
-                tg.HapticFeedback.impactOccurred('light');
+                tg.HapticFeedback?.impactOccurred('light');
               }
-            }" />
+            }" 
+          />
           
           <SummaryView v-if="userRole === 'chef'" :entries="dailyEntries" />
 
@@ -157,8 +188,22 @@ const groupedEntries = computed(() => {
               <component :is="cat === 'bakery' ? ShoppingBasket : ChefHat" class="w-2.5 h-2.5" />
               {{ cat === 'bakery' ? 'Выпечка' : 'Кондитерка' }}
             </h3>
-            <EntryCard v-for="item in items" :key="item.product_id" :item="item" 
-              @remove="dailyEntries.splice(dailyEntries.indexOf(item), 1)" />
+            
+            <EntryCard 
+              v-for="item in items" 
+              :key="item.product_id" 
+              :item="item" 
+              @remove="() => {
+                const idx = dailyEntries.indexOf(item);
+                if (idx > -1) dailyEntries.splice(idx, 1);
+                tg.HapticFeedback?.impactOccurred('medium');
+              }" 
+            />
+          </div>
+
+          <div v-if="dailyEntries.length === 0" class="text-center py-10 opacity-20">
+            <ShoppingBasket class="w-10 h-10 mx-auto mb-2" />
+            <p class="text-[10px] font-black uppercase">Список пуст</p>
           </div>
         </div>
       </div>
@@ -174,9 +219,3 @@ const groupedEntries = computed(() => {
     </nav>
   </div>
 </template>
-
-<style>
-::-webkit-scrollbar { display: none; }
-* { -ms-overflow-style: none; scrollbar-width: none; -webkit-tap-highlight-color: transparent; outline: none; }
-body { background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-</style>

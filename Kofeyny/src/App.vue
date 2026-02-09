@@ -18,60 +18,51 @@ const userId = tg.initDataUnsafe?.user?.id || null;
 const initialize = async () => {
   loading.value = true;
   
-  // 1. ПРОВЕРКА ОКРУЖЕНИЯ (Для локальных тестов)
+  // 1. Загружаем товары (это работает всегда)
+  const { data: prods } = await supabase.from('products').select('*').order('name');
+  products.value = prods || [];
+
+  // 2. Логика доступа
   if (!userId) {
-    console.log("Режим локального тестирования");
-    userRole.value = 'staff'; // Меняй на 'chef' для проверки вида повара
-    
-    // Загружаем данные из Supabase, но если там пусто — создаем временные для теста
-    const { data: prods } = await supabase.from('products').select('*');
-    if (prods && prods.length > 0) {
-      products.value = prods;
-    } else {
-      products.value = [
-        { id: 1, name: 'Багет', category: 'bakery', unit: 'шт' },
-        { id: 2, name: 'Круассан', category: 'bakery', unit: 'шт' },
-        { id: 3, name: 'Чизкейк', category: 'pastry', unit: 'шт' }
-      ];
-    }
-    loading.value = false;
-    return;
-  }
+    // Если мы на ноуте (userId == null)
+    console.log("Локальный тест: ставим staff");
+    userRole.value = 'staff'; 
+  } else {
+    // Если мы в Telegram (userId есть)
+    const { data: user } = await supabase
+      .from('allowed_users')
+      .select('role')
+      .eq('telegram_id', userId)
+      .single();
 
-  // 2. РАБОТА В TELEGRAM
-  try {
-    const { data: user } = await supabase.from('allowed_users').select('role').eq('telegram_id', userId).single();
-    
-    if (!user) {
-      userRole.value = false;
-    } else {
+    if (user) {
       userRole.value = user.role;
-      const { data: prods } = await supabase.from('products').select('*').order('name');
-      products.value = prods || [];
-
-      // Загружаем записи за сегодня
-      const today = new Date().toISOString().split('T')[0];
-      const { data: existing } = await supabase
-        .from('daily_records')
-        .select('*, products(name, category, unit)')
-        .gte('created_at', today);
-      
-      if (existing) {
-        dailyEntries.value = existing.map(e => ({
-          id: e.id,
-          product_id: e.product_id,
-          name: e.products?.name || 'Удаленный товар',
-          category: e.products?.category || 'bakery',
-          arrival: e.arrival,
-          remainder: e.remainder,
-          write_off: e.write_off
-        }));
-      }
+      // Загружаем записи за сегодня, если они есть
+      await fetchTodayRecords();
+    } else {
+      userRole.value = false; // Доступ запрещен
     }
-  } catch (e) {
-    console.error("Ошибка инициализации:", e);
-  } finally {
-    loading.value = false;
+  }
+  loading.value = false;
+};
+
+// Вынесем загрузку записей в отдельную функцию для чистоты
+const fetchTodayRecords = async () => {
+  const today = new Date().toISOString().split('T')[0];
+  const { data: existing } = await supabase
+    .from('daily_records')
+    .select('*, products(name, category, unit)')
+    .gte('created_at', today);
+  
+  if (existing && existing.length > 0) {
+    dailyEntries.value = existing.map(e => ({
+      product_id: e.product_id,
+      name: e.products?.name,
+      category: e.products?.category,
+      arrival: e.arrival,
+      remainder: e.remainder,
+      write_off: e.write_off
+    }));
   }
 };
 

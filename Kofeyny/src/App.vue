@@ -2,58 +2,83 @@
 import { ref, onMounted, computed } from 'vue';
 import { supabase } from './supabase';
 import { 
-  Plus, Minus, RotateCw, Save, Lock, Trash2, PlusCircle, LayoutList
+  Plus, Minus, RotateCw, Save, Lock, Trash2, PlusCircle, LayoutList, ShoppingBasket, ChefHat
 } from 'lucide-vue-next';
 
 const tg = window.Telegram.WebApp;
 
 // Состояние
-const products = ref([]); // Весь справочник
-const dailyEntries = ref([]); // То, что сотрудник добавил в текущую сессию
+const products = ref([]); 
+const dailyEntries = ref([]); 
 const loading = ref(true);
 const userRole = ref(null);
 const userId = tg.initDataUnsafe?.user?.id || null;
 
-// Загрузка справочника и проверка доступа
+// Инициализация
 const initialize = async () => {
   loading.value = true;
   
-  // 1. Проверка доступа
-  const { data: user } = await supabase.from('allowed_users').select('role').eq('telegram_id', userId).single();
-  if (!user) { userRole.value = false; loading.value = false; return; }
-  userRole.value = user.role;
-
-  // 2. Загрузка справочника товаров
-  const { data: prods } = await supabase.from('products').select('*').order('name');
-  products.value = prods;
-
-  // 3. Загрузка сегодняшних записей (если уже заполняли)
-  const today = new Date().toISOString().split('T')[0];
-  const { data: existing } = await supabase
-    .from('daily_records')
-    .select('*, products(name, category, unit)')
-    .gte('created_at', today);
-  
-  if (existing) {
-    dailyEntries.value = existing.map(e => ({
-      id: e.id,
-      product_id: e.product_id,
-      name: e.products.name,
-      category: e.products.category,
-      arrival: e.arrival,
-      remainder: e.remainder,
-      write_off: e.write_off
-    }));
+  // 1. ПРОВЕРКА ОКРУЖЕНИЯ (Для локальных тестов)
+  if (!userId) {
+    console.log("Режим локального тестирования");
+    userRole.value = 'staff'; // Меняй на 'chef' для проверки вида повара
+    
+    // Загружаем данные из Supabase, но если там пусто — создаем временные для теста
+    const { data: prods } = await supabase.from('products').select('*');
+    if (prods && prods.length > 0) {
+      products.value = prods;
+    } else {
+      products.value = [
+        { id: 1, name: 'Багет', category: 'bakery', unit: 'шт' },
+        { id: 2, name: 'Круассан', category: 'bakery', unit: 'шт' },
+        { id: 3, name: 'Чизкейк', category: 'pastry', unit: 'шт' }
+      ];
+    }
+    loading.value = false;
+    return;
   }
-  
-  loading.value = false;
+
+  // 2. РАБОТА В TELEGRAM
+  try {
+    const { data: user } = await supabase.from('allowed_users').select('role').eq('telegram_id', userId).single();
+    
+    if (!user) {
+      userRole.value = false;
+    } else {
+      userRole.value = user.role;
+      const { data: prods } = await supabase.from('products').select('*').order('name');
+      products.value = prods || [];
+
+      // Загружаем записи за сегодня
+      const today = new Date().toISOString().split('T')[0];
+      const { data: existing } = await supabase
+        .from('daily_records')
+        .select('*, products(name, category, unit)')
+        .gte('created_at', today);
+      
+      if (existing) {
+        dailyEntries.value = existing.map(e => ({
+          id: e.id,
+          product_id: e.product_id,
+          name: e.products?.name || 'Удаленный товар',
+          category: e.products?.category || 'bakery',
+          arrival: e.arrival,
+          remainder: e.remainder,
+          write_off: e.write_off
+        }));
+      }
+    }
+  } catch (e) {
+    console.error("Ошибка инициализации:", e);
+  } finally {
+    loading.value = false;
+  }
 };
 
-// Добавление новой строки в отчет
+// Добавление позиции
 const addEntry = (product) => {
-  // Проверяем, нет ли уже этого товара в списке
   if (dailyEntries.value.find(e => e.product_id === product.id)) {
-    tg.showAlert("Этот товар уже добавлен");
+    tg.showAlert?.("Этот товар уже в списке");
     return;
   }
   
@@ -65,7 +90,7 @@ const addEntry = (product) => {
     remainder: 0,
     write_off: 0
   });
-  tg.HapticFeedback.impactOccurred('medium');
+  if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
 };
 
 const removeEntry = (index) => {
@@ -74,21 +99,30 @@ const removeEntry = (index) => {
 
 // Сохранение
 const saveReport = async () => {
-  tg.MainButton.showProgress();
+  if (dailyEntries.value.length === 0) {
+    alert("Добавьте хотя бы один товар");
+    return;
+  }
+
+  if (tg.MainButton) tg.MainButton.showProgress();
+
   const { error } = await supabase.from('daily_records').upsert(
     dailyEntries.value.map(e => ({
       product_id: e.product_id,
       arrival: e.arrival,
       remainder: e.remainder,
       write_off: e.write_off,
-      user_id: userId
+      user_id: userId || 0 // 0 для тестов
     }))
   );
 
-  tg.MainButton.hideProgress();
+  if (tg.MainButton) tg.MainButton.hideProgress();
+
   if (!error) {
-    tg.showAlert("Отчет сохранен успешно!");
-    tg.HapticFeedback.notificationOccurred('success');
+    if (tg.showAlert) tg.showAlert("Отчет сохранен!");
+    else alert("Отчет сохранен!");
+  } else {
+    alert("Ошибка: " + error.message);
   }
 };
 
@@ -96,123 +130,124 @@ onMounted(() => {
   tg.ready();
   tg.expand();
   initialize();
-  tg.MainButton.setText("СОХРАНИТЬ ВЕСЬ УЧЕТ");
-  tg.MainButton.onClick(saveReport);
+  
+  if (userId) {
+    tg.MainButton.setParams({ text: "СОХРАНИТЬ ОТЧЕТ", is_visible: true, color: '#2563eb' });
+    tg.MainButton.onClick(saveReport);
+  }
 });
 
-// Группировка для отображения
 const groupedEntries = computed(() => {
   const groups = { bakery: [], pastry: [] };
-  dailyEntries.value.forEach(e => groups[e.category]?.push(e));
+  dailyEntries.value.forEach(e => {
+    if (groups[e.category]) groups[e.category].push(e);
+  });
   return groups;
 });
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-100 pb-40 font-sans">
+  <div class="min-h-screen bg-slate-100 pb-40 font-sans text-slate-900">
     
     <div v-if="loading" class="flex flex-col items-center justify-center h-screen space-y-4">
        <RotateCw class="w-8 h-8 animate-spin text-blue-500" />
+       <p class="text-sm text-slate-400">Синхронизация...</p>
     </div>
 
-    <div v-else-if="userRole === false" class="flex flex-col items-center justify-center min-h-screen p-8 text-center">
-      <div class="w-20 h-20 bg-red-100 text-red-600 rounded-3xl flex items-center justify-center mb-6">
-        <Lock class="w-10 h-10" />
-      </div>
-      <h1 class="text-2xl font-black text-slate-800">Доступ закрыт</h1>
-      <p class="text-slate-500 mt-3 leading-relaxed">
-        Вас нет в списке сотрудников.<br>
-        <span class="font-mono text-xs bg-slate-200 px-1 rounded">ID: {{ userId || 'не определен' }}</span>
-      </p>
-      <button @click="checkAccess" class="mt-8 text-blue-600 font-bold flex items-center gap-2">
-        <RotateCw class="w-4 h-4" /> Попробовать снова
-      </button>
+    <div v-else-if="userRole === false" class="flex flex-col items-center justify-center h-screen p-10 text-center">
+       <Lock class="w-16 h-16 text-red-400 mb-4" />
+       <h1 class="text-xl font-bold">Доступ ограничен</h1>
+       <p class="text-slate-500 text-sm mt-2">ID: {{ userId }}</p>
     </div>
 
     <div v-else>
-      <header class="bg-white p-4 sticky top-0 z-20 border-b border-slate-200 shadow-sm">
-        <h1 class="text-lg font-black text-slate-800">Учет смены</h1>
-        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Заполнение прихода и остатков</p>
+      <header class="bg-white/80 backdrop-blur-md p-4 sticky top-0 z-30 border-b border-slate-200 shadow-sm flex justify-between items-center">
+        <div>
+          <h1 class="text-lg font-black tracking-tight">Cofeyny <span class="text-blue-500">PRO</span></h1>
+          <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Учет продукции</p>
+        </div>
+        <div class="px-3 py-1 bg-slate-100 rounded-full text-[10px] font-bold uppercase text-slate-500">
+          {{ userRole === 'staff' ? 'Бариста' : 'Повар' }}
+        </div>
       </header>
 
-      <main v-if="userRole === 'staff'" class="p-4 space-y-6">
-        
-        <section>
-          <h2 class="text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-            <PlusCircle class="w-4 h-4" /> Добавить позицию в отчет
+      <main class="p-4 space-y-6">
+        <section v-if="userRole === 'staff'">
+          <h2 class="text-[10px] font-black text-slate-400 uppercase mb-3 tracking-widest flex items-center gap-2">
+            <PlusCircle class="w-3 h-3" /> Нажмите, чтобы добавить:
           </h2>
           <div class="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
             <button v-for="p in products" :key="p.id" 
                     @click="addEntry(p)"
-                    class="flex-shrink-0 bg-white border border-slate-200 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:bg-blue-50 transition-colors">
+                    class="flex-shrink-0 bg-white border-2 border-transparent active:border-blue-500 px-4 py-2 rounded-2xl text-xs font-black shadow-sm transition-all">
               {{ p.name }}
             </button>
           </div>
         </section>
 
-        <div v-for="(items, cat) in groupedEntries" :key="cat">
-          <h2 v-if="items.length" class="text-xs font-black text-slate-400 uppercase mb-3 tracking-widest px-1">
-            {{ cat === 'bakery' ? 'Выпечка' : 'Кондитерка' }}
-          </h2>
-          
-          <div class="space-y-3">
+        <div v-if="userRole === 'staff'" v-for="(items, cat) in groupedEntries" :key="cat">
+          <div v-if="items.length" class="mb-6 space-y-4">
+            <div class="flex items-center gap-2">
+              <component :is="cat === 'bakery' ? ShoppingBasket : ChefHat" class="w-4 h-4 text-slate-400" />
+              <h2 class="text-xs font-black text-slate-400 uppercase tracking-widest">{{ cat === 'bakery' ? 'Выпечка' : 'Кондитерка' }}</h2>
+            </div>
+            
             <div v-for="(item, idx) in items" :key="item.product_id" 
-                 class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 relative">
-              
-              <div class="flex justify-between items-start mb-4">
-                <h3 class="font-bold text-slate-800">{{ item.name }}</h3>
-                <button @click="removeEntry(idx)" class="text-slate-300 hover:text-red-500 transition-colors">
+                 class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200 animate-in fade-in slide-in-from-bottom-2">
+              <div class="flex justify-between items-center mb-4">
+                <span class="font-black text-slate-700">{{ item.name }}</span>
+                <button @click="removeEntry(idx)" class="w-8 h-8 flex items-center justify-center rounded-full bg-red-50 text-red-400">
                   <Trash2 class="w-4 h-4" />
                 </button>
               </div>
 
-              <div class="grid grid-cols-3 gap-3 text-center">
-                <div class="space-y-1">
-                  <label class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Приход</label>
-                  <input type="number" v-model="item.arrival" class="w-full bg-slate-50 border border-slate-100 rounded-lg py-2 text-center font-bold text-blue-600 focus:ring-2 ring-blue-100 outline-none" />
+              <div class="grid grid-cols-3 gap-4">
+                <div class="space-y-2">
+                  <p class="text-[9px] font-black text-slate-400 uppercase text-center">Пришло</p>
+                  <input type="number" v-model.number="item.arrival" class="w-full bg-blue-50/50 border-2 border-blue-100 rounded-xl py-3 text-center font-black text-blue-600 outline-none focus:border-blue-500 transition-all" />
                 </div>
-                <div class="space-y-1">
-                  <label class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Остаток</label>
-                  <input type="number" v-model="item.remainder" class="w-full bg-slate-50 border border-slate-100 rounded-lg py-2 text-center font-bold text-green-600 focus:ring-2 ring-green-100 outline-none" />
+                <div class="space-y-2">
+                  <p class="text-[9px] font-black text-slate-400 uppercase text-center">Остаток</p>
+                  <input type="number" v-model.number="item.remainder" class="w-full bg-green-50/50 border-2 border-green-100 rounded-xl py-3 text-center font-black text-green-600 outline-none focus:border-green-500 transition-all" />
                 </div>
-                <div class="space-y-1">
-                  <label class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Списание</label>
-                  <input type="number" v-model="item.write_off" class="w-full bg-slate-50 border border-slate-100 rounded-lg py-2 text-center font-bold text-red-500 focus:ring-2 ring-red-100 outline-none" />
+                <div class="space-y-2">
+                  <p class="text-[9px] font-black text-slate-400 uppercase text-center">Списание</p>
+                  <input type="number" v-model.number="item.write_off" class="w-full bg-red-50/50 border-2 border-red-100 rounded-xl py-3 text-center font-black text-red-500 outline-none focus:border-red-500 transition-all" />
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div v-if="dailyEntries.length === 0" class="py-20 text-center text-slate-400 border-2 border-dashed border-slate-200 rounded-3xl">
-           <LayoutList class="w-10 h-10 mx-auto mb-2 opacity-20" />
-           <p class="text-sm font-medium">Список пуст.<br>Добавьте товары сверху.</p>
+        <div v-if="userRole === 'staff' && dailyEntries.length === 0" class="py-20 text-center">
+           <div class="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
+             <LayoutList class="w-8 h-8 text-slate-200" />
+           </div>
+           <p class="text-sm font-bold text-slate-400">Сегодня еще ничего не добавили</p>
+        </div>
+
+        <div v-if="userRole === 'chef'" class="space-y-3">
+          <div v-for="item in dailyEntries" :key="item.product_id" class="bg-white p-4 rounded-2xl flex justify-between items-center shadow-sm">
+             <span class="font-bold text-slate-700">{{ item.name }}</span>
+             <div class="flex gap-2">
+               <span class="px-3 py-1 bg-green-100 text-green-600 rounded-lg text-xs font-black">Ост: {{ item.remainder }}</span>
+               <span class="px-3 py-1 bg-red-100 text-red-600 rounded-lg text-xs font-black">Спис: {{ item.write_off }}</span>
+             </div>
+          </div>
         </div>
       </main>
 
-      <main v-if="userRole === 'chef'" class="p-4 space-y-4">
-        <div v-for="item in dailyEntries" :key="item.id" 
-             class="bg-white p-4 rounded-2xl flex justify-between items-center shadow-sm border border-slate-100">
-           <div>
-             <p class="font-bold text-slate-800">{{ item.name }}</p>
-             <p class="text-[10px] text-slate-400 uppercase">Остаток на конец смены</p>
-           </div>
-           <div class="text-2xl font-black text-blue-600">
-             {{ item.remainder }} <span class="text-xs text-slate-300 font-bold uppercase tracking-tighter">шт</span>
-           </div>
-        </div>
-      </main>
-    </div>
-
-    <div v-if="userRole === 'staff' && !loading" class="fixed bottom-6 left-0 right-0 px-4">
-       <button @click="saveReport" class="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-blue-200 active:scale-95 transition-all">
-         СОХРАНИТЬ ОТЧЕТ
-       </button>
+      <div v-if="userRole === 'staff' && !userId" class="fixed bottom-6 left-0 right-0 px-4">
+         <button @click="saveReport" class="w-full bg-blue-600 text-white font-black py-5 rounded-2xl shadow-xl active:scale-95 transition-all">
+           СОХРАНИТЬ ОТЧЕТ
+         </button>
+      </div>
     </div>
   </div>
 </template>
 
-<style scoped>
+<style>
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 </style>

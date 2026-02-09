@@ -1,165 +1,218 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue';
 import { supabase } from './supabase';
-import { ShoppingBasket, ChefHat, Plus, Minus, RotateCw, Save } from 'lucide-vue-next';
+import { 
+  Plus, Minus, RotateCw, Save, Lock, Trash2, PlusCircle, LayoutList
+} from 'lucide-vue-next';
 
 const tg = window.Telegram.WebApp;
-const inventory = ref([]);
+
+// Состояние
+const products = ref([]); // Весь справочник
+const dailyEntries = ref([]); // То, что сотрудник добавил в текущую сессию
 const loading = ref(true);
-const issaving = ref(false);
+const userRole = ref(null);
+const userId = tg.initDataUnsafe?.user?.id || null;
 
-// Проверка: запущено ли в Телеге или в обычном браузере
-// Если platform === 'unknown', значит это обычный браузер
-const isTelegram = computed(() => tg.platform !== 'unknown');
-
-const fetchInventory = async () => {
+// Загрузка справочника и проверка доступа
+const initialize = async () => {
   loading.value = true;
-  const { data, error } = await supabase
-    .from('inventory')
-    .select('*')
-    .order('category', { ascending: false });
   
-  if (data) inventory.value = data;
+  // 1. Проверка доступа
+  const { data: user } = await supabase.from('allowed_users').select('role').eq('telegram_id', userId).single();
+  if (!user) { userRole.value = false; loading.value = false; return; }
+  userRole.value = user.role;
+
+  // 2. Загрузка справочника товаров
+  const { data: prods } = await supabase.from('products').select('*').order('name');
+  products.value = prods;
+
+  // 3. Загрузка сегодняшних записей (если уже заполняли)
+  const today = new Date().toISOString().split('T')[0];
+  const { data: existing } = await supabase
+    .from('daily_records')
+    .select('*, products(name, category, unit)')
+    .gte('created_at', today);
+  
+  if (existing) {
+    dailyEntries.value = existing.map(e => ({
+      id: e.id,
+      product_id: e.product_id,
+      name: e.products.name,
+      category: e.products.category,
+      arrival: e.arrival,
+      remainder: e.remainder,
+      write_off: e.write_off
+    }));
+  }
+  
   loading.value = false;
 };
 
-const saveToDb = async () => {
-  if (issaving.value) return;
-  issaving.value = true;
+// Добавление новой строки в отчет
+const addEntry = (product) => {
+  // Проверяем, нет ли уже этого товара в списке
+  if (dailyEntries.value.find(e => e.product_id === product.id)) {
+    tg.showAlert("Этот товар уже добавлен");
+    return;
+  }
   
-  if (isTelegram.value) tg.MainButton.showProgress();
-
-  const { error } = await supabase
-    .from('inventory')
-    .upsert(inventory.value.map(item => ({
-      id: item.id,
-      name: item.name,
-      category: item.category,
-      count: item.count,
-      unit: item.unit,
-      updated_at: new Date()
-    })));
-
-  issaving.value = false;
-  if (isTelegram.value) tg.MainButton.hideProgress();
-
-  if (!error) {
-    if (isTelegram.value) {
-      tg.HapticFeedback.notificationOccurred('success');
-      tg.showPopup({ message: "Данные успешно сохранены!" });
-    } else {
-      alert("✅ Сохранено в базу данных!");
-    }
-  } else {
-    alert("Ошибка сохранения: " + error.message);
-  }
-};
-
-const increment = (id) => {
-  const item = inventory.value.find(i => i.id === id);
-  if (item) {
-    item.count++;
-    if (isTelegram.value) tg.HapticFeedback.impactOccurred('light');
-  }
-};
-
-const decrement = (id) => {
-  const item = inventory.value.find(i => i.id === id);
-  if (item && item.count > 0) {
-    item.count--;
-    if (isTelegram.value) tg.HapticFeedback.impactOccurred('light');
-  }
-};
-
-const categories = computed(() => {
-  const groups = {};
-  inventory.value.forEach(item => {
-    if (!groups[item.category]) groups[item.category] = [];
-    groups[item.category].push(item);
+  dailyEntries.value.push({
+    product_id: product.id,
+    name: product.name,
+    category: product.category,
+    arrival: 0,
+    remainder: 0,
+    write_off: 0
   });
-  return groups;
-});
+  tg.HapticFeedback.impactOccurred('medium');
+};
+
+const removeEntry = (index) => {
+  dailyEntries.value.splice(index, 1);
+};
+
+// Сохранение
+const saveReport = async () => {
+  tg.MainButton.showProgress();
+  const { error } = await supabase.from('daily_records').upsert(
+    dailyEntries.value.map(e => ({
+      product_id: e.product_id,
+      arrival: e.arrival,
+      remainder: e.remainder,
+      write_off: e.write_off,
+      user_id: userId
+    }))
+  );
+
+  tg.MainButton.hideProgress();
+  if (!error) {
+    tg.showAlert("Отчет сохранен успешно!");
+    tg.HapticFeedback.notificationOccurred('success');
+  }
+};
 
 onMounted(() => {
   tg.ready();
-  fetchInventory();
-  
-  if (isTelegram.value) {
-    tg.MainButton.setParams({
-      text: 'СОХРАНИТЬ В БАЗУ',
-      color: '#2563eb',
-      is_active: true,
-      is_visible: true
-    });
-    tg.MainButton.onClick(saveToDb);
-  }
+  tg.expand();
+  initialize();
+  tg.MainButton.setText("СОХРАНИТЬ ВЕСЬ УЧЕТ");
+  tg.MainButton.onClick(saveReport);
+});
+
+// Группировка для отображения
+const groupedEntries = computed(() => {
+  const groups = { bakery: [], pastry: [] };
+  dailyEntries.value.forEach(e => groups[e.category]?.push(e));
+  return groups;
 });
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50 pb-32 font-sans antialiased">
-    <header class="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-4 flex justify-between items-center">
-      <div>
-        <h1 class="text-xl font-extrabold text-slate-800 tracking-tight">Кафетерий</h1>
-        <p class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Учет остатков</p>
+  <div class="min-h-screen bg-slate-100 pb-40 font-sans">
+    
+    <div v-if="loading" class="flex flex-col items-center justify-center h-screen space-y-4">
+       <RotateCw class="w-8 h-8 animate-spin text-blue-500" />
+    </div>
+
+    <div v-else-if="userRole === false" class="flex flex-col items-center justify-center min-h-screen p-8 text-center">
+      <div class="w-20 h-20 bg-red-100 text-red-600 rounded-3xl flex items-center justify-center mb-6">
+        <Lock class="w-10 h-10" />
       </div>
-      <button @click="fetchInventory" class="p-2 text-slate-400 active:rotate-180 transition-transform duration-500">
-        <RotateCw :class="{'animate-spin': loading}" class="w-5 h-5" />
+      <h1 class="text-2xl font-black text-slate-800">Доступ закрыт</h1>
+      <p class="text-slate-500 mt-3 leading-relaxed">
+        Вас нет в списке сотрудников.<br>
+        <span class="font-mono text-xs bg-slate-200 px-1 rounded">ID: {{ userId || 'не определен' }}</span>
+      </p>
+      <button @click="checkAccess" class="mt-8 text-blue-600 font-bold flex items-center gap-2">
+        <RotateCw class="w-4 h-4" /> Попробовать снова
       </button>
-    </header>
+    </div>
 
-    <main class="p-4 space-y-8">
-      <div v-if="loading" class="flex flex-col items-center justify-center py-20">
-        <div class="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p class="text-slate-400 text-sm">Загрузка данных...</p>
-      </div>
+    <div v-else>
+      <header class="bg-white p-4 sticky top-0 z-20 border-b border-slate-200 shadow-sm">
+        <h1 class="text-lg font-black text-slate-800">Учет смены</h1>
+        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Заполнение прихода и остатков</p>
+      </header>
 
-      <div v-else v-for="(items, catName) in categories" :key="catName" class="space-y-4">
-        <div class="flex items-center gap-2 px-1">
-          <component :is="catName === 'bakery' ? ShoppingBasket : ChefHat" 
-                     :class="['w-5 h-5', catName === 'bakery' ? 'text-amber-500' : 'text-pink-500']" />
-          <h2 class="text-sm font-black uppercase tracking-widest text-slate-500">
-            {{ catName === 'bakery' ? 'Выпечка' : 'Кондитерка' }}
+      <main v-if="userRole === 'staff'" class="p-4 space-y-6">
+        
+        <section>
+          <h2 class="text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
+            <PlusCircle class="w-4 h-4" /> Добавить позицию в отчет
           </h2>
-        </div>
+          <div class="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+            <button v-for="p in products" :key="p.id" 
+                    @click="addEntry(p)"
+                    class="flex-shrink-0 bg-white border border-slate-200 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:bg-blue-50 transition-colors">
+              {{ p.name }}
+            </button>
+          </div>
+        </section>
 
-        <div class="grid gap-3">
-          <div v-for="item in items" :key="item.id" 
-               class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-            <div class="flex-1">
-              <h3 class="font-bold text-slate-700">{{ item.name }}</h3>
-              <p class="text-xs text-slate-400 font-medium">{{ item.unit }}</p>
-            </div>
+        <div v-for="(items, cat) in groupedEntries" :key="cat">
+          <h2 v-if="items.length" class="text-xs font-black text-slate-400 uppercase mb-3 tracking-widest px-1">
+            {{ cat === 'bakery' ? 'Выпечка' : 'Кондитерка' }}
+          </h2>
+          
+          <div class="space-y-3">
+            <div v-for="(item, idx) in items" :key="item.product_id" 
+                 class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 relative">
+              
+              <div class="flex justify-between items-start mb-4">
+                <h3 class="font-bold text-slate-800">{{ item.name }}</h3>
+                <button @click="removeEntry(idx)" class="text-slate-300 hover:text-red-500 transition-colors">
+                  <Trash2 class="w-4 h-4" />
+                </button>
+              </div>
 
-            <div class="flex items-center bg-slate-50 rounded-xl p-1 border border-slate-100">
-              <button @click="decrement(item.id)" class="w-10 h-10 flex items-center justify-center rounded-lg bg-white shadow-sm active:scale-90 transition-transform">
-                <Minus class="w-4 h-4 text-slate-600" />
-              </button>
-              <div class="w-12 text-center font-black text-slate-800 text-lg">{{ item.count }}</div>
-              <button @click="increment(item.id)" class="w-10 h-10 flex items-center justify-center rounded-lg bg-blue-600 shadow-sm active:scale-90 transition-transform">
-                <Plus class="w-4 h-4 text-white" />
-              </button>
+              <div class="grid grid-cols-3 gap-3 text-center">
+                <div class="space-y-1">
+                  <label class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Приход</label>
+                  <input type="number" v-model="item.arrival" class="w-full bg-slate-50 border border-slate-100 rounded-lg py-2 text-center font-bold text-blue-600 focus:ring-2 ring-blue-100 outline-none" />
+                </div>
+                <div class="space-y-1">
+                  <label class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Остаток</label>
+                  <input type="number" v-model="item.remainder" class="w-full bg-slate-50 border border-slate-100 rounded-lg py-2 text-center font-bold text-green-600 focus:ring-2 ring-green-100 outline-none" />
+                </div>
+                <div class="space-y-1">
+                  <label class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Списание</label>
+                  <input type="number" v-model="item.write_off" class="w-full bg-slate-50 border border-slate-100 rounded-lg py-2 text-center font-bold text-red-500 focus:ring-2 ring-red-100 outline-none" />
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </main>
 
-    <div v-if="!isTelegram && !loading" class="fixed bottom-6 left-0 right-0 px-4 z-30">
-      <button @click="saveToDb" 
-              :disabled="issaving"
-              class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-200 flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50">
-        <Save v-if="!issaving" class="w-5 h-5" />
-        <div v-else class="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-        {{ issaving ? 'СОХРАНЯЕМ...' : 'СОХРАНИТЬ В БАЗУ' }}
-      </button>
-      <p class="text-center text-[10px] text-slate-400 mt-2 uppercase font-bold tracking-tighter">Режим веб-браузера</p>
+        <div v-if="dailyEntries.length === 0" class="py-20 text-center text-slate-400 border-2 border-dashed border-slate-200 rounded-3xl">
+           <LayoutList class="w-10 h-10 mx-auto mb-2 opacity-20" />
+           <p class="text-sm font-medium">Список пуст.<br>Добавьте товары сверху.</p>
+        </div>
+      </main>
+
+      <main v-if="userRole === 'chef'" class="p-4 space-y-4">
+        <div v-for="item in dailyEntries" :key="item.id" 
+             class="bg-white p-4 rounded-2xl flex justify-between items-center shadow-sm border border-slate-100">
+           <div>
+             <p class="font-bold text-slate-800">{{ item.name }}</p>
+             <p class="text-[10px] text-slate-400 uppercase">Остаток на конец смены</p>
+           </div>
+           <div class="text-2xl font-black text-blue-600">
+             {{ item.remainder }} <span class="text-xs text-slate-300 font-bold uppercase tracking-tighter">шт</span>
+           </div>
+        </div>
+      </main>
+    </div>
+
+    <div v-if="userRole === 'staff' && !loading" class="fixed bottom-6 left-0 right-0 px-4">
+       <button @click="saveReport" class="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-blue-200 active:scale-95 transition-all">
+         СОХРАНИТЬ ОТЧЕТ
+       </button>
     </div>
   </div>
 </template>
-<style>
-/* Убираем выделение при нажатии на мобилках */
-* {
-  -webkit-tap-highlight-color: transparent;
-}
+
+<style scoped>
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 </style>

@@ -9,7 +9,6 @@ import { RotateCw, Lock, LayoutGrid, History, ShoppingBasket, ChefHat } from 'lu
 
 const tg = window.Telegram.WebApp;
 
-// Состояние
 const activeTab = ref('main'); 
 const userRole = ref(null); 
 const products = ref([]);
@@ -20,13 +19,11 @@ const userId = tg.initDataUnsafe?.user?.id || null;
 const initialize = async () => {
   loading.value = true;
   
-  // 1. Справочник продуктов
   const { data: prods } = await supabase.from('products').select('*').order('name');
   products.value = prods || [];
 
-  // 2. Доступ
   if (!userId) {
-    userRole.value = 'admin'; // Для локальных тестов
+    userRole.value = 'admin'; 
   } else {
     const { data: user } = await supabase.from('allowed_users').select('role').eq('telegram_id', userId).single();
     userRole.value = user?.role || false;
@@ -43,8 +40,7 @@ const fetchTodayRecords = async () => {
     .gte('created_at', today)
     .order('created_at', { ascending: false });
 
-  if (data) {
-    // Оставляем только уникальные последние записи по product_id
+  if (data && data.length > 0) {
     const uniqueMap = new Map();
     data.forEach(item => {
       if (!uniqueMap.has(item.product_id)) {
@@ -52,39 +48,46 @@ const fetchTodayRecords = async () => {
           product_id: item.product_id,
           name: item.products.name,
           category: item.products.category,
-          arrival: item.arrival,
-          remainder: item.remainder,
-          write_off: item.write_off
+          arrival: item.arrival ?? 0,
+          remainder: item.remainder ?? 0,
+          write_off: item.write_off ?? 0
         });
       }
     });
     dailyEntries.value = Array.from(uniqueMap.values());
+  } else {
+    dailyEntries.value = [];
   }
 };
 
 const saveReport = async () => {
-  if (dailyEntries.value.length === 0) return;
   tg.MainButton.showProgress();
-  
-  const { error } = await supabase.from('daily_records').insert(
-    dailyEntries.value.map(e => ({
-      product_id: e.product_id,
-      arrival: e.arrival,
-      remainder: e.remainder,
-      write_off: e.write_off,
-      user_id: userId || 0
-    }))
-  );
+  const today = new Date().toISOString().split('T')[0];
+
+  await supabase.from('daily_records')
+    .delete()
+    .eq('user_id', userId || 0)
+    .gte('created_at', today);
+
+  if (dailyEntries.value.length > 0) {
+    const { error } = await supabase.from('daily_records').insert(
+      dailyEntries.value.map(e => ({
+        product_id: e.product_id,
+        arrival: Number(e.arrival) || 0,
+        remainder: Number(e.remainder) || 0,
+        write_off: Number(e.write_off) || 0,
+        user_id: userId || 0
+      }))
+    );
+    if (error) alert(error.message);
+  }
 
   tg.MainButton.hideProgress();
-  if (!error) {
-    tg.HapticFeedback.notificationOccurred('success');
-    tg.showAlert("✅ Отчет сохранен!");
-  }
+  tg.HapticFeedback.notificationOccurred('success');
+  tg.showAlert("✅ Данные обновлены");
 };
 
-// Управление кнопкой Telegram
-watch([userRole, dailyEntries], () => {
+watch([userRole, dailyEntries, activeTab], () => {
   if (userRole.value !== 'chef' && dailyEntries.value.length > 0 && activeTab.value === 'main') {
     tg.MainButton.setParams({ text: "СОХРАНИТЬ ОТЧЕТ", is_visible: true, color: '#2563eb' });
   } else {
@@ -107,38 +110,43 @@ const groupedEntries = computed(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50 text-slate-900 pb-32">
-    <header class="bg-white/80 backdrop-blur-md p-4 sticky top-0 z-40 border-b border-slate-200 flex justify-between items-center">
+  <div class="min-h-screen bg-slate-50 text-slate-900 pb-20 overflow-x-hidden">
+    <header class="bg-white/90 backdrop-blur-md p-3 sticky top-0 z-40 border-b border-slate-200 flex justify-between items-center shadow-sm">
       <div>
-        <h1 class="text-xl font-black italic tracking-tighter text-blue-600">COFEYNY</h1>
-        <p class="text-[9px] font-black text-slate-400 uppercase tracking-widest">Control Panel</p>
+        <h1 class="text-lg font-black italic tracking-tighter text-blue-600 leading-none">KAFETERIY</h1>
+        <p class="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">Панель управления</p>
       </div>
-      <div class="flex items-center gap-3">
-        <span class="text-[10px] font-black px-3 py-1 bg-slate-100 rounded-full text-slate-500 uppercase">{{ userRole }}</span>
-        <button @click="initialize" class="text-slate-300"><RotateCw class="w-5 h-5" /></button>
+      <div class="flex items-center gap-2">
+        <span class="text-[9px] font-black px-2 py-0.5 bg-slate-100 rounded-md text-slate-500 uppercase">{{ userRole }}</span>
+        <button @click="initialize" class="text-slate-300 active:rotate-180 transition-transform duration-500"><RotateCw class="w-4 h-4" /></button>
       </div>
     </header>
 
-    <main class="p-4">
-      <div v-if="loading" class="flex justify-center py-20"><div class="animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div></div>
+    <main class="p-3">
+      <div v-if="loading" class="flex justify-center py-10"><RotateCw class="w-6 h-6 animate-spin text-blue-500" /></div>
       
-      <div v-else-if="userRole === false" class="text-center py-20 flex flex-col items-center">
-        <Lock class="w-12 h-12 text-red-400 mb-4" />
-        <h2 class="text-xl font-black">Доступ закрыт</h2>
-        <p class="text-sm text-slate-400 mt-2">Ваш ID: {{ userId }}</p>
+      <div v-else-if="userRole === false" class="text-center py-10 flex flex-col items-center">
+        <Lock class="w-10 h-10 text-red-400 mb-2" />
+        <h2 class="text-lg font-black text-red-500 uppercase">Доступ ограничен</h2>
+        <p class="text-[10px] text-slate-400 mt-1 uppercase font-bold tracking-widest">Ваш ID: {{ userId }}</p>
       </div>
 
       <div v-else>
         <AdminArchive v-if="activeTab === 'archive' && userRole === 'admin'" />
 
-        <div v-else class="space-y-8">
+        <div v-else class="space-y-4">
           <ProductSelector v-if="userRole !== 'chef'" :products="products" :dailyEntries="dailyEntries" 
-            @add="p => dailyEntries.push({...p, product_id: p.id, arrival:0, remainder:0, write_off:0})" />
+            @add="p => {
+              if (!dailyEntries.find(e => e.product_id === p.id)) {
+                dailyEntries.unshift({...p, product_id: p.id, arrival:0, remainder:0, write_off:0});
+                tg.HapticFeedback.impactOccurred('light');
+              }
+            }" />
           
           <SummaryView v-if="userRole === 'chef'" :entries="dailyEntries" />
 
-          <div v-else v-for="(items, cat) in groupedEntries" :key="cat" class="space-y-4">
-            <h3 v-if="items.length" class="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] flex items-center gap-2">
+          <div v-else v-for="(items, cat) in groupedEntries" :key="cat" class="space-y-3">
+            <h3 v-if="items.length" class="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 ml-1">
               <component :is="cat === 'bakery' ? ShoppingBasket : ChefHat" class="w-3 h-3" />
               {{ cat === 'bakery' ? 'Выпечка' : 'Кондитерка' }}
             </h3>
@@ -149,13 +157,28 @@ const groupedEntries = computed(() => {
       </div>
     </main>
 
-    <nav v-if="userRole === 'admin'" class="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t p-4 flex justify-around shadow-2xl z-50">
-      <button @click="activeTab = 'main'" :class="activeTab === 'main' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 transition-colors">
-        <LayoutGrid class="w-6 h-6" /><span class="text-[9px] font-black uppercase">Учет</span>
+    <nav v-if="userRole === 'admin'" class="fixed bottom-0 left-0 right-0 bg-white/95 border-t p-2 flex justify-around shadow-lg z-50">
+      <button @click="activeTab = 'main'" :class="activeTab === 'main' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-0.5">
+        <LayoutGrid class="w-5 h-5" /><span class="text-[8px] font-black uppercase">Учет</span>
       </button>
-      <button @click="activeTab = 'archive'" :class="activeTab === 'archive' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 transition-colors">
-        <History class="w-6 h-6" /><span class="text-[9px] font-black uppercase">Архив</span>
+      <button @click="activeTab = 'archive'" :class="activeTab === 'archive' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-0.5">
+        <History class="w-5 h-5" /><span class="text-[8px] font-black uppercase">Архив</span>
       </button>
     </nav>
   </div>
 </template>
+
+<style>
+/* Скрытие скроллбара */
+::-webkit-scrollbar { display: none; }
+* { -ms-overflow-style: none; scrollbar-width: none; -webkit-tap-highlight-color: transparent; }
+body { background-color: #f8fafc; overscroll-behavior-y: contain; font-size: 14px; }
+input { user-select: auto; }
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+/* Чтобы при клике на пустое место клавиатура тоже уходила */
+#app {
+  min-height: 100vh;
+}
+</style>

@@ -3,7 +3,6 @@ import { ref, onMounted, computed, watch } from "vue";
 import { supabase } from "./supabase";
 import ProductSelector from "./components/ProductSelector.vue";
 import EntryCard from "./components/EntryCard.vue";
-import SummaryView from "./components/SummaryView.vue";
 import AdminArchive from "./components/AdminArchive.vue";
 import ScheduleView from "./components/ScheduleView.vue";
 import {
@@ -16,7 +15,8 @@ import {
   CalendarClock,
 } from "lucide-vue-next";
 
-const tg = window.Telegram.WebApp;
+const tg = window.Telegram?.WebApp || null;
+const isTelegram = !!tg;
 
 // --- СОСТОЯНИЕ ---
 const activeTab = ref("main");
@@ -151,28 +151,30 @@ const groupedEntries = computed(() => {
 watch(
   [userRole, activeTab, dailyEntries],
   () => {
-    if (
-      userRole.value &&
-      userRole.value !== "chef" &&
-      activeTab.value === "main"
-    ) {
-      tg.MainButton.setParams({
-        text: "СОХРАНИТЬ ОТЧЕТ",
-        is_visible: true,
-        color: "#2563eb",
-      });
-    } else {
-      tg.MainButton.hide();
+    if (tg?.MainButton) {
+      if (
+        userRole.value &&
+        userRole.value !== "chef" &&
+        activeTab.value === "main"
+      ) {
+        tg.MainButton.setParams({
+          text: "СОХРАНИТЬ ОТЧЕТ",
+          is_visible: true,
+          color: "#2563eb",
+        });
+      } else {
+        tg.MainButton.hide();
+      }
     }
   },
   { deep: true },
 );
 
 onMounted(() => {
-  tg.ready();
-  tg.expand();
+  tg?.ready?.();
+  tg?.expand?.();
   initialize();
-  tg.MainButton.onClick(saveReport);
+  tg?.MainButton?.onClick?.(saveReport);
 });
 </script>
 
@@ -231,45 +233,16 @@ onMounted(() => {
         </div>
 
         <div v-else class="space-y-4">
-          <ProductSelector
-            v-if="userRole !== 'chef'"
-            :products="products"
-            :dailyEntries="dailyEntries"
-            @add="onAddProduct"
-          />
-
-          <div v-if="userRole === 'chef'" class="space-y-6">
-            <div
-              class="bg-blue-600 rounded-2xl p-5 text-white shadow-lg flex items-center justify-between"
-            >
-              <div>
-                <p
-                  class="text-[9px] font-black opacity-70 uppercase tracking-widest leading-none"
-                >
-                  Кухня
-                </p>
-                <p class="text-xl font-black mt-1">План выпечки</p>
-              </div>
-              <ChefHat class="w-8 h-8 opacity-40" />
-            </div>
-
-            <div
-              v-for="(items, cat) in groupedEntries"
-              :key="cat"
-              class="space-y-2"
-            >
-              <h3
-                v-if="items.length"
-                class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2 flex items-center gap-2"
-              >
-                <div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
-                {{ cat === "bakery" ? "Выпечка" : "Кондитерка" }}
-              </h3>
-              <SummaryView :entries="items" />
-            </div>
+          <div v-if="userRole === 'chef'">
+            <AdminArchive :lockedMode="'records'" :hideToggle="true" />
           </div>
 
           <div v-else class="space-y-4">
+            <ProductSelector
+              :products="products"
+              :dailyEntries="dailyEntries"
+              @add="onAddProduct"
+            />
             <div
               v-for="(items, cat) in groupedEntries"
               :key="cat"
@@ -313,6 +286,19 @@ onMounted(() => {
         </div>
       </div>
     </main>
+
+    <div
+      v-if="!isTelegram && userRole && userRole !== 'chef' && activeTab === 'main'"
+      class="fixed left-4 right-4 z-50"
+      :style="{ bottom: 'calc(85px + env(safe-area-inset-bottom))' }"
+    >
+      <button
+        @click="saveReport"
+        class="w-full bg-blue-600 text-white py-4 rounded-2xl shadow-2xl shadow-blue-300 font-black uppercase text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
+      >
+        СОХРАНИТЬ ОТЧЕТ
+      </button>
+    </div>
 
     <nav
       v-if="userRole"

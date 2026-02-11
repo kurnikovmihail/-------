@@ -7,7 +7,7 @@ import {
 } from 'lucide-vue-next';
 
 const props = defineProps(['userRole', 'userId']);
-const tg = window.Telegram.WebApp;
+const tg = window.Telegram?.WebApp || null;
 
 // --- СОСТОЯНИЕ ---
 const shifts = ref([]); 
@@ -41,12 +41,12 @@ const isPastDate = (dateStr) => {
   return dateStr < today;
 };
 
-const safeAlert = (msg) => tg.showAlert ? tg.showAlert(msg) : alert(msg);
+const safeAlert = (msg) => tg?.showAlert ? tg.showAlert(msg) : alert(msg);
 const safeConfirm = (msg, callback) => {
-  if (tg.showConfirm) tg.showConfirm(msg, (ok) => callback(ok));
+  if (tg?.showConfirm) tg.showConfirm(msg, (ok) => callback(ok));
   else callback(window.confirm(msg));
 };
-const triggerHaptic = (type = 'light') => tg.HapticFeedback?.impactOccurred(type);
+const triggerHaptic = (type = 'light') => tg?.HapticFeedback?.impactOccurred(type);
 
 // --- ИНИЦИАЛИЗАЦИЯ ---
 const initialize = async () => {

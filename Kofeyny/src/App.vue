@@ -5,7 +5,8 @@ import ProductSelector from './components/ProductSelector.vue';
 import EntryCard from './components/EntryCard.vue';
 import SummaryView from './components/SummaryView.vue';
 import AdminArchive from './components/AdminArchive.vue';
-import { RotateCw, Lock, LayoutGrid, History, ShoppingBasket, ChefHat } from 'lucide-vue-next';
+import ScheduleView from './components/ScheduleView.vue';
+import { RotateCw, Lock, LayoutGrid, History, ShoppingBasket, ChefHat, CalendarClock } from 'lucide-vue-next';
 
 const tg = window.Telegram.WebApp;
 
@@ -165,7 +166,9 @@ onMounted(() => {
         <Lock class="w-10 h-10 text-red-300 mx-auto mb-2" />
         <h2 class="text-xs font-black uppercase text-slate-400">Доступ ограничен</h2>
       </div>
-
+<div v-else-if="activeTab === 'schedule'">
+   <ScheduleView :userRole="userRole" :userId="userId" />
+</div>
       <div v-else>
         <div v-if="activeTab === 'archive' && userRole === 'admin'">
           <AdminArchive />
@@ -225,6 +228,7 @@ onMounted(() => {
 
         </div>
       </div>
+      
     </main>
 
     <nav v-if="userRole === 'admin'" 
@@ -242,6 +246,12 @@ onMounted(() => {
         <History class="w-5 h-5" />
         <span class="text-[9px] font-black uppercase mt-1">Архив</span>
       </button>
+      <button @click="activeTab = 'schedule'" 
+        :class="activeTab === 'schedule' ? 'text-blue-600' : 'text-slate-300'" 
+        class="flex flex-col items-center flex-1 py-1 transition-colors">
+  <CalendarClock class="w-5 h-5" />
+  <span class="text-[9px] font-black uppercase mt-1">График</span>
+</button>
     </nav>
   </div>
 </template>
